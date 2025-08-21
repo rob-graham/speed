@@ -30,7 +30,7 @@ def resample(points: List[Tuple[float, float]], step: float) -> List[Tuple[float
     Linear interpolation is used between input points."""
     if len(points) < 2:
         return points
-@@ -33,121 +34,255 @@ def resample(points: List[Tuple[float, float]], step: float) -> List[Tuple[float
+
     for i in range(len(points) - 1):
         x0, y0 = points[i]
         x1, y1 = points[i + 1]
