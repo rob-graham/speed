@@ -30,7 +30,7 @@ def resample(points: List[Tuple[float, float]], step: float) -> List[Tuple[float
     Linear interpolation is used between input points."""
     if len(points) < 2:
         return points
-
+    resampled: List[Tuple[float, float]] = []
     for i in range(len(points) - 1):
         x0, y0 = points[i]
         x1, y1 = points[i + 1]
@@ -38,9 +38,9 @@ def resample(points: List[Tuple[float, float]], step: float) -> List[Tuple[float
         n = max(1, int(math.floor(seg_len / step)))
         for j in range(n):
             t = j / n
-            pts.append((x0 + t * (x1 - x0), y0 + t * (y1 - y0)))
-    pts.append(points[-1])
-    return pts
+            resampled.append((x0 + t * (x1 - x0), y0 + t * (y1 - y0)))
+    resampled.append(points[-1])
+    return resampled
 
 def _curvature(p0: Tuple[float, float], p1: Tuple[float, float], p2: Tuple[float, float]) -> float:
     """Return curvature (1/radius) for three consecutive points."""
