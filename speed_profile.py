@@ -17,13 +17,28 @@ def load_csv(path: str) -> List[Tuple[float, float]]:
             pts.append((x, y))
     return pts
 
-def save_csv(path: str, pts: List[Tuple[float, float]], speeds: List[float]) -> None:
-    """Save x,y coordinates with speed to CSV."""
+
+def cumulative_distance(pts: List[Tuple[float, float]]) -> List[float]:
+    """Return cumulative distance along *pts* starting from zero."""
+    s = [0.0]
+    for i in range(1, len(pts)):
+        x0, y0 = pts[i - 1]
+        x1, y1 = pts[i]
+        s.append(s[-1] + math.hypot(x1 - x0, y1 - y0))
+    return s
+
+def save_csv(path: str,
+             pts: List[Tuple[float, float]],
+             dists: List[float],
+             speeds: List[float],
+             gears: List[int],
+             rpms: List[float]) -> None:
+    """Save x,y coordinates with distance, speed (m/s and kph), gear and rpm to CSV."""
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["x_m", "y_m", "v_mps"])
-        for (x, y), v in zip(pts, speeds):
-            writer.writerow([x, y, v])
+        writer.writerow(["x_m", "y_m", "s_m", "v_mps", "v_kph", "gear", "rpm"])
+        for (x, y), s, v, g, r in zip(pts, dists, speeds, gears, rpms):
+            writer.writerow([x, y, s, v, v * 3.6, g, r])
 
 def _arc_segment(p0: Tuple[float, float],
                  p1: Tuple[float, float],
@@ -121,13 +136,13 @@ class BikeParams:
     Crr: float = 0.015
     rw: float = 0.31
     mu: float = 1.20
-    a_wheelie_max: float = 0.9 * 9.81
+    a_wheelie_max: float = 1.0 * 9.81   # was 0.9 * 9.81
     a_brake: float = 1.2 * 9.81
     shift_rpm: float = 16000.0
-    primary: float = 1.95
-    final_drive: float = 2.80
-    gears: Tuple[float, ...] = (2.85, 2.12, 1.76, 1.52, 1.39, 1.30)
-    eta_driveline: float = 0.92
+    primary: float = 85.0/41.0
+    final_drive: float = 47.0/16.0
+    gears: Tuple[float, ...] = (2.583, 2.000, 1.667, 1.444, 1.286, 1.150)
+    eta_driveline: float = 0.95
     T_peak: float = 63.0
 
     def torque_curve(self, rpm: float) -> float:
@@ -214,9 +229,17 @@ def compute_speed_profile(
             v_prev = math.sqrt(max(0.0, v[i + 1] * v[i + 1] + 2 * a_brk * ds[i]))
             if v_prev < v[i]:
                 v[i] = v_prev
+        v_loop = min(v[0], v[-1])
+        v[0] = v[-1] = v_loop
 
-    v_loop = min(v[0], v[-1])
-    v[0] = v[-1] = v_loop
+    # simple neighbour averaging to damp residual jitter
+    for _ in range(3):
+        v_smooth = v.copy()
+        for i in range(n):
+            v_smooth[i] = 0.25 * v[(i - 1) % n] + 0.5 * v[i] + 0.25 * v[(i + 1) % n]
+        v = v_smooth
+        v_loop = min(v[0], v[-1])
+        v[0] = v[-1] = v_loop
 
     lap_time = 0.0
     for i in range(n - 1):
@@ -290,28 +313,29 @@ def main():
     parser.add_argument("--Crr", type=float, default=0.015)
     parser.add_argument("--rw", type=float, default=0.31)
     parser.add_argument("--mu", type=float, default=1.20)
-    parser.add_argument("--a_wheelie_max", type=float, default=0.9 * 9.81)
+    parser.add_argument("--a_wheelie_max", type=float, default=1.0 * 9.81)
     parser.add_argument("--a_brake", type=float, default=1.2 * 9.81)
     parser.add_argument("--shift_rpm", type=float, default=16000.0)
-    parser.add_argument("--primary", type=float, default=1.95)
-    parser.add_argument("--final_drive", type=float, default=2.80)
-    parser.add_argument("--gears", type=str, default="2.85,2.12,1.76,1.52,1.39,1.30",
+    parser.add_argument("--primary", type=float, default=85.0/41.0)
+    parser.add_argument("--final_drive", type=float, default=47.0/16.0)
+    parser.add_argument("--gears", type=str, default="2.583, 2.000, 1.667, 1.444, 1.286, 1.150",
                         help="Comma separated gear ratios")
-    parser.add_argument("--eta_driveline", type=float, default=0.92)
+    parser.add_argument("--eta_driveline", type=float, default=0.95)
     parser.add_argument("--T_peak", type=float, default=63.0)
 
     parser.add_argument("--traction-circle", action="store_true",
                         help="Enable traction circle for acceleration")
     parser.add_argument("--trail-braking", action="store_true",
                         help="Apply traction circle during braking")
-    parser.add_argument("--sweeps", type=int, default=8,
+    parser.add_argument("--sweeps", type=int, default=25,
                         help="Forward/back sweeps for solver")
 
     args = parser.parse_args()
 
     pts = load_csv(args.input)
     pts = resample(pts, args.step)
-
+    dists = cumulative_distance(pts)
+    
     bp = BikeParams(
         rho=args.rho,
         g=args.g,
@@ -337,7 +361,14 @@ def main():
         trail_braking=args.trail_braking,
         sweeps=args.sweeps,
     )
-    save_csv(args.output, pts, speeds)
+    gears: List[int] = []
+    rpms: List[float] = []
+    for v in speeds:
+        gear_ratio = select_gear(v, bp)
+        gears.append(bp.gears.index(gear_ratio) + 1)
+        rpms.append(engine_rpm(v, bp, gear_ratio))
+        
+    save_csv(args.output, pts, dists, speeds, gears, rpms)
     print(f"Lap time: {lap_time:.2f} s")
 
 if __name__ == "__main__":
