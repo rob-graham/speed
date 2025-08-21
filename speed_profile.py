@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import List, Tuple
 import math
 
+
 def load_csv(path: str) -> List[Tuple[float, float]]:
     """Load x,y coordinates from a CSV file with two columns and no header."""
     pts: List[Tuple[float, float]] = []
@@ -29,7 +30,7 @@ def resample(points: List[Tuple[float, float]], step: float) -> List[Tuple[float
     Linear interpolation is used between input points."""
     if len(points) < 2:
         return points
-    pts: List[Tuple[float, float]] = []
+@@ -33,121 +34,255 @@ def resample(points: List[Tuple[float, float]], step: float) -> List[Tuple[float
     for i in range(len(points) - 1):
         x0, y0 = points[i]
         x1, y1 = points[i + 1]
@@ -55,42 +56,119 @@ def _curvature(p0: Tuple[float, float], p1: Tuple[float, float], p2: Tuple[float
     radius = a * b * c / (4.0 * area)
     return 1.0 / radius
 
-def compute_speed_profile(pts: List[Tuple[float, float]], a_lat: float = 12.0,
-                          a_acc: float = 3.0, a_brake: float = 6.0,
-                          v_max_straight: float = 100.0) -> List[float]:
-    """Compute a smooth speed profile for *pts*.
 
-    Parameters
-    ----------
-    pts : list of (x, y)
-        Track centreline points in metres.
-    a_lat : float
-        Maximum lateral acceleration (m/s^2) allowed.
-    a_acc : float
-        Maximum longitudinal acceleration (m/s^2).
-    a_brake : float
-        Maximum braking deceleration (m/s^2).
-    v_max_straight : float
-        Optional cap on straight line speed (m/s).
-    """
+@dataclass
+class BikeParams:
+    """Parameters describing the motorcycle and environment."""
+
+    rho: float = 1.225
+    g: float = 9.81
+    m: float = 265.0
+    CdA: float = 0.35
+    Crr: float = 0.015
+    rw: float = 0.31
+    mu: float = 1.20
+    a_wheelie_max: float = 0.9 * 9.81
+    a_brake: float = 1.2 * 9.81
+    shift_rpm: float = 16000.0
+    primary: float = 1.95
+    final_drive: float = 2.80
+    gears: Tuple[float, ...] = (2.85, 2.12, 1.76, 1.52, 1.39, 1.30)
+    eta_driveline: float = 0.92
+    T_peak: float = 63.0
+
+    def torque_curve(self, rpm: float) -> float:
+        """Simple flat torque curve."""
+        return self.T_peak
+
+
+def engine_rpm(v: float, bp: BikeParams, gear: float) -> float:
+    omega_w = v / bp.rw
+    omega_e = omega_w * bp.primary * bp.final_drive * gear
+    return omega_e * 60.0 / (2 * math.pi)
+
+
+def wheel_force(v: float, bp: BikeParams, gear: float) -> float:
+    T = bp.torque_curve(engine_rpm(v, bp, gear))
+    G = bp.primary * bp.final_drive * gear
+    return (T * G * bp.eta_driveline) / bp.rw
+
+
+def aero_drag(v: float, bp: BikeParams) -> float:
+    return 0.5 * bp.rho * bp.CdA * v * v
+
+
+def roll_res(bp: BikeParams) -> float:
+    return bp.Crr * bp.m * bp.g
+
+
+def traction_circle_cap(v: float, radius: float, bp: BikeParams, eps: float = 0.0) -> float:
+    radius = max(radius, 1.0)
+    a_lat = (v * v) / radius
+    inside = (bp.mu * bp.g) ** 2 * (1.0 - eps) - a_lat * a_lat
+    return math.sqrt(max(0.0, inside))
+
+
+def select_gear(v: float, bp: BikeParams) -> float:
+    """Select the highest gear that keeps engine rpm below the shift point."""
+    for g in bp.gears:
+        if engine_rpm(v, bp, g) <= bp.shift_rpm:
+            return g
+    return bp.gears[-1]
+
+def compute_speed_profile(
+    pts: List[Tuple[float, float]],
+    bp: BikeParams,
+    use_traction_circle: bool = False,
+    trail_braking: bool = False,
+    sweeps: int = 8,
+) -> Tuple[List[float], float]:
+    """Compute a speed profile and lap time for *pts*."""
+
     n = len(pts)
     if n < 3:
-        return [0.0] * n
-    ds = [math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1])
-          for i in range(n - 1)]
-    curv = [0.0] * n
+        return [0.0] * n, 0.0
+
+    x = [p[0] for p in pts]
+    y = [p[1] for p in pts]
+    ds = [math.hypot(x[i + 1] - x[i], y[i + 1] - y[i]) for i in range(n - 1)]
+    R = [0.0] * n
     for i in range(1, n - 1):
-        curv[i] = _curvature(pts[i - 1], pts[i], pts[i + 1])
-    v_max = [v_max_straight] * n
-    for i in range(n):
-        if curv[i] > 1e-9:
-            v_max[i] = math.sqrt(a_lat / curv[i])
-    v = v_max[:]
-    for i in range(1, n):
-        v[i] = min(v[i], math.sqrt(v[i - 1] ** 2 + 2 * a_acc * ds[i - 1]))
-    for i in range(n - 2, -1, -1):
-        v[i] = min(v[i], math.sqrt(v[i + 1] ** 2 + 2 * a_brake * ds[i]))
-    return v
+        curv = _curvature(pts[i - 1], pts[i], pts[i + 1])
+        R[i] = 1.0 / max(abs(curv), 1e-9)
+    R[0] = R[1]
+    R[-1] = R[-2]
+
+    v = [math.sqrt(max(0.0, bp.mu * bp.g * max(R[i], 1.0))) * 0.97 for i in range(n)]
+
+    for _ in range(sweeps):
+        for i in range(n - 1):
+            v_i = v[i]
+            gear = select_gear(v_i, bp)
+            Fw = wheel_force(v_i, bp, gear)
+            a_pow = (Fw - aero_drag(v_i, bp) - roll_res(bp)) / bp.m
+            a_pow = min(a_pow, bp.a_wheelie_max)
+            a_pow = max(a_pow, -bp.a_brake)
+            if use_traction_circle:
+                a_pow = min(a_pow, traction_circle_cap(v_i, R[i], bp))
+            v_next = math.sqrt(max(0.0, v_i * v_i + 2 * a_pow * ds[i]))
+            if v_next < v[i + 1]:
+                v[i + 1] = v_next
+        for i in range(n - 2, -1, -1):
+            a_brk = bp.a_brake
+            if use_traction_circle and trail_braking:
+                a_brk = min(a_brk, traction_circle_cap(v[i + 1], R[i + 1], bp))
+            v_prev = math.sqrt(max(0.0, v[i + 1] * v[i + 1] + 2 * a_brk * ds[i]))
+            if v_prev < v[i]:
+                v[i] = v_prev
+
+    lap_time = 0.0
+    for i in range(n - 1):
+        v_avg = max(1e-3, 0.5 * (v[i] + v[i + 1]))
+        lap_time += ds[i] / v_avg
+
+    return v, lap_time
+
 
 @dataclass
 class Segment:
@@ -138,16 +216,73 @@ def build_track(segments: List[Segment], step: float = 1.0,
         pts.extend(new_pts)
     return pts
 
+def _parse_gears(s: str) -> Tuple[float, ...]:
+    return tuple(float(g) for g in s.split(",") if g)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Generate speed profile for a track")
     parser.add_argument("input", help="Input CSV with x,y points")
     parser.add_argument("output", help="Output CSV with x,y,v")
     parser.add_argument("--step", type=float, default=2.0, help="Resampling distance in metres")
+
+    # Motorcycle and environment parameters
+    parser.add_argument("--rho", type=float, default=1.225)
+    parser.add_argument("--g", type=float, default=9.81)
+    parser.add_argument("--m", type=float, default=265.0)
+    parser.add_argument("--CdA", type=float, default=0.35)
+    parser.add_argument("--Crr", type=float, default=0.015)
+    parser.add_argument("--rw", type=float, default=0.31)
+    parser.add_argument("--mu", type=float, default=1.20)
+    parser.add_argument("--a_wheelie_max", type=float, default=0.9 * 9.81)
+    parser.add_argument("--a_brake", type=float, default=1.2 * 9.81)
+    parser.add_argument("--shift_rpm", type=float, default=16000.0)
+    parser.add_argument("--primary", type=float, default=1.95)
+    parser.add_argument("--final_drive", type=float, default=2.80)
+    parser.add_argument("--gears", type=str, default="2.85,2.12,1.76,1.52,1.39,1.30",
+                        help="Comma separated gear ratios")
+    parser.add_argument("--eta_driveline", type=float, default=0.92)
+    parser.add_argument("--T_peak", type=float, default=63.0)
+
+    parser.add_argument("--traction-circle", action="store_true",
+                        help="Enable traction circle for acceleration")
+    parser.add_argument("--trail-braking", action="store_true",
+                        help="Apply traction circle during braking")
+    parser.add_argument("--sweeps", type=int, default=8,
+                        help="Forward/back sweeps for solver")
+
     args = parser.parse_args()
+
     pts = load_csv(args.input)
     pts = resample(pts, args.step)
-    speeds = compute_speed_profile(pts)
+
+    bp = BikeParams(
+        rho=args.rho,
+        g=args.g,
+        m=args.m,
+        CdA=args.CdA,
+        Crr=args.Crr,
+        rw=args.rw,
+        mu=args.mu,
+        a_wheelie_max=args.a_wheelie_max,
+        a_brake=args.a_brake,
+        shift_rpm=args.shift_rpm,
+        primary=args.primary,
+        final_drive=args.final_drive,
+        gears=_parse_gears(args.gears),
+        eta_driveline=args.eta_driveline,
+        T_peak=args.T_peak,
+    )
+
+    speeds, lap_time = compute_speed_profile(
+        pts,
+        bp,
+        use_traction_circle=args.traction_circle,
+        trail_braking=args.trail_braking,
+        sweeps=args.sweeps,
+    )
     save_csv(args.output, pts, speeds)
+    print(f"Lap time: {lap_time:.2f} s")
 
 if __name__ == "__main__":
     main()
