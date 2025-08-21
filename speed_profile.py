@@ -25,21 +25,74 @@ def save_csv(path: str, pts: List[Tuple[float, float]], speeds: List[float]) -> 
         for (x, y), v in zip(pts, speeds):
             writer.writerow([x, y, v])
 
-def resample(points: List[Tuple[float, float]], step: float) -> List[Tuple[float, float]]:
-    """Resample a list of points so that adjacent points are spaced by *step* metres.
-    Linear interpolation is used between input points."""
-    if len(points) < 2:
-        return points
-    resampled: List[Tuple[float, float]] = []
-    for i in range(len(points) - 1):
-        x0, y0 = points[i]
-        x1, y1 = points[i + 1]
-        seg_len = math.hypot(x1 - x0, y1 - y0)
+def _arc_segment(p0: Tuple[float, float],
+                 p1: Tuple[float, float],
+                 p2: Tuple[float, float],
+                 step: float) -> List[Tuple[float, float]]:
+    """Return points from *p1* to *p2* following a circular arc through
+    (*p0*, *p1*, *p2*).  If the points are nearly collinear a straight line is
+    generated instead."""
+    x1, y1 = p0
+    x2, y2 = p1
+    x3, y3 = p2
+    area = x1 * (y2 - y3) - y1 * (x2 - x3) + x2 * y3 - x3 * y2
+    if abs(area) < 1e-9:
+        seg_len = math.hypot(x3 - x2, y3 - y2)
         n = max(1, int(math.floor(seg_len / step)))
-        for j in range(n):
-            t = j / n
-            resampled.append((x0 + t * (x1 - x0), y0 + t * (y1 - y0)))
-    resampled.append(points[-1])
+        return [
+            (x2 + (j / n) * (x3 - x2), y2 + (j / n) * (y3 - y2))
+            for j in range(n + 1)
+        ]
+
+    b = (x1 * x1 + y1 * y1) * (y3 - y2) + (x2 * x2 + y2 * y2) * (y1 - y3) + (
+        x3 * x3 + y3 * y3
+    ) * (y2 - y1)
+    c = (x1 * x1 + y1 * y1) * (x2 - x3) + (x2 * x2 + y2 * y2) * (x3 - x1) + (
+        x3 * x3 + y3 * y3
+    ) * (x1 - x2)
+    cx = -b / (2 * area)
+    cy = -c / (2 * area)
+    r = math.hypot(x2 - cx, y2 - cy)
+    th1 = math.atan2(y2 - cy, x2 - cx)
+    th2 = math.atan2(y3 - cy, x3 - cx)
+    cross = (x2 - x1) * (y3 - y2) - (y2 - y1) * (x3 - x2)
+    if cross > 0.0:
+        if th2 <= th1:
+            th2 += 2 * math.pi
+    else:
+        if th2 >= th1:
+            th2 -= 2 * math.pi
+    arc_len = r * abs(th2 - th1)
+    n = max(1, int(math.floor(arc_len / step)))
+    return [
+        (cx + r * math.cos(th1 + (j / n) * (th2 - th1)),
+         cy + r * math.sin(th1 + (j / n) * (th2 - th1)))
+        for j in range(n + 1)
+    ]
+
+
+def resample(points: List[Tuple[float, float]], step: float) -> List[Tuple[float, float]]:
+    """Resample *points* using circular arcs so that adjacent points are
+    approximately *step* metres apart."""
+    if len(points) < 3:
+        return points
+
+    if math.hypot(points[0][0] - points[-1][0], points[0][1] - points[-1][1]) > 1e-6:
+        points = points + [points[0]]
+
+    resampled: List[Tuple[float, float]] = []
+    n = len(points) - 1  # last equals first
+    for i in range(n):
+        p_prev = points[i - 1]
+        p_curr = points[i]
+        p_next = points[(i + 1) % n]
+        seg = _arc_segment(p_prev, p_curr, p_next, step)
+        if i == 0:
+            resampled.extend(seg)
+        else:
+            resampled.extend(seg[1:])
+
+    resampled.append(resampled[0])
     return resampled
 
 def _curvature(p0: Tuple[float, float], p1: Tuple[float, float], p2: Tuple[float, float]) -> float:
@@ -161,6 +214,9 @@ def compute_speed_profile(
             v_prev = math.sqrt(max(0.0, v[i + 1] * v[i + 1] + 2 * a_brk * ds[i]))
             if v_prev < v[i]:
                 v[i] = v_prev
+
+    v_loop = min(v[0], v[-1])
+    v[0] = v[-1] = v_loop
 
     lap_time = 0.0
     for i in range(n - 1):
