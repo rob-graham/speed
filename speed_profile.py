@@ -1,3 +1,15 @@
+"""Utilities for generating a motorcycle speed profile along a racing line.
+
+The script reads a CSV file containing ``x,y`` coordinates that describe the
+centre line of a race track.  The path is resampled to roughly equal spacing
+and a simple physics model is applied to estimate the maximum speed the bike
+can maintain at each point.  The resulting profile including gear selection and
+engine RPM is written to a new CSV file.
+
+Run ``python speed_profile.py --help`` for a list of available command line
+options.
+"""
+
 import argparse
 import csv
 from dataclasses import dataclass
@@ -127,7 +139,12 @@ def _curvature(p0: Tuple[float, float], p1: Tuple[float, float], p2: Tuple[float
 
 @dataclass
 class BikeParams:
-    """Parameters describing the motorcycle and environment."""
+       """Parameters describing the motorcycle and environment.
+
+    The defaults approximate a 600-class sport bike.  Adjust these values to
+    model different machines or track conditions.  All forces are expressed in
+    SI units.
+    """
 
     rho: float = 1.225
     g: float = 9.81
@@ -191,7 +208,15 @@ def compute_speed_profile(
     trail_braking: bool = False,
     sweeps: int = 8,
 ) -> Tuple[List[float], float]:
-    """Compute a speed profile and lap time for *pts*."""
+    """Compute a speed profile and lap time for *pts*.
+
+    The solver performs a number of forward and backward sweeps along the
+    resampled path, applying acceleration limits from the engine, aerodynamics
+    and optional traction circle.  When ``trail_braking`` is true the same
+    traction limit is applied while decelerating.  The function returns a list
+    of speeds in metres per second for each path point and the overall lap time
+    in seconds.
+    """
 
     n = len(pts)
     if n < 3:
