@@ -139,7 +139,7 @@ def _curvature(p0: Tuple[float, float], p1: Tuple[float, float], p2: Tuple[float
 
 @dataclass
 class BikeParams:
-       """Parameters describing the motorcycle and environment.
+    """Parameters describing the motorcycle and environment.
 
     The defaults approximate a 600-class sport bike.  Adjust these values to
     model different machines or track conditions.  All forces are expressed in
