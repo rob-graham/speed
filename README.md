@@ -20,11 +20,18 @@ python speed_profile.py input.csv output.csv [options]
 * `--traction-circle` – limit acceleration by lateral grip
 * `--trail-braking` – apply traction limit while braking
 * `--sweeps` – number of forward/backward passes for the solver
+* `--curv-smooth` – neighbour-averaging passes for corner radius (helps on noisy tracks)
+* `--speed-smooth` – neighbour-averaging passes for final speed profile
 * Motorcycle parameters such as `--m` (mass) and `--gears` can be overridden; see
   `python speed_profile.py --help` for the full list.
 
 The output CSV contains `x`/`y` coordinates, cumulative distance, speed in both
 m/s and km/h, selected gear and engine RPM.
+
+For very small tracks or when using a tight `--step`, curvature calculations can
+pick up noise that leads to a jerky speed trace. Increasing `--curv-smooth` or
+`--speed-smooth` applies additional neighbour averaging to the corner radius or
+speed profile to mitigate this.
 
 ## Development notes
 

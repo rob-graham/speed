@@ -207,15 +207,20 @@ def compute_speed_profile(
     use_traction_circle: bool = False,
     trail_braking: bool = False,
     sweeps: int = 8,
+    curv_smoothing: int = 3,
+    speed_smoothing: int = 3,
 ) -> Tuple[List[float], float]:
     """Compute a speed profile and lap time for *pts*.
 
     The solver performs a number of forward and backward sweeps along the
     resampled path, applying acceleration limits from the engine, aerodynamics
     and optional traction circle.  When ``trail_braking`` is true the same
-    traction limit is applied while decelerating.  The function returns a list
-    of speeds in metres per second for each path point and the overall lap time
-    in seconds.
+    traction limit is applied while decelerating.  ``curv_smoothing`` and
+    ``speed_smoothing`` control how many neighbour-averaging passes are applied
+    to the corner radius and final speeds respectively, which can help remove
+    jitter on high resolution tracks.
+    The function returns a list of speeds in metres per second for each path
+    point and the overall lap time in seconds.
     """
 
     n = len(pts)
@@ -231,7 +236,12 @@ def compute_speed_profile(
         R[i] = 1.0 / max(abs(curv), 1e-9)
     R[0] = R[1]
     R[-1] = R[-2]
-
+    for _ in range(curv_smoothing):
+        R_s = R.copy()
+        for i in range(n):
+            R_s[i] = 0.25 * R[(i - 1) % n] + 0.5 * R[i] + 0.25 * R[(i + 1) % n]
+        R = R_s
+        
     v = [math.sqrt(max(0.0, bp.mu * bp.g * max(R[i], 1.0))) * 0.97 for i in range(n)]
 
     for _ in range(sweeps):
@@ -258,7 +268,7 @@ def compute_speed_profile(
         v[0] = v[-1] = v_loop
 
     # simple neighbour averaging to damp residual jitter
-    for _ in range(3):
+    for _ in range(speed_smoothing):
         v_smooth = v.copy()
         for i in range(n):
             v_smooth[i] = 0.25 * v[(i - 1) % n] + 0.5 * v[i] + 0.25 * v[(i + 1) % n]
@@ -354,7 +364,11 @@ def main():
                         help="Apply traction circle during braking")
     parser.add_argument("--sweeps", type=int, default=25,
                         help="Forward/back sweeps for solver")
-
+    parser.add_argument("--curv-smooth", type=int, default=3,
+                        help="Neighbour-averaging passes for corner radius")
+    parser.add_argument("--speed-smooth", type=int, default=3,
+                        help="Neighbour-averaging passes for final speeds")
+    
     args = parser.parse_args()
 
     pts = load_csv(args.input)
@@ -385,6 +399,8 @@ def main():
         use_traction_circle=args.traction_circle,
         trail_braking=args.trail_braking,
         sweeps=args.sweeps,
+        curv_smoothing=args.curv_smooth,
+        speed_smoothing=args.speed_smooth,
     )
     gears: List[int] = []
     rpms: List[float] = []
