@@ -44,13 +44,30 @@ def save_csv(path: str,
              dists: List[float],
              speeds: List[float],
              gears: List[int],
-             rpms: List[float]) -> None:
-    """Save x,y coordinates with distance, speed (m/s and kph), gear and rpm to CSV."""
+             rpms: List[float],
+             curvatures: List[float],
+             limiters: List[str]) -> None:
+    """Save results including curvature and limiting factor to CSV."""
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["x_m", "y_m", "s_m", "v_mps", "v_kph", "gear", "rpm"])
-        for (x, y), s, v, g, r in zip(pts, dists, speeds, gears, rpms):
-            writer.writerow([x, y, s, v, v * 3.6, g, r])
+        writer.writerow([
+            "x_m",
+            "y_m",
+            "s_m",
+            "v_mps",
+            "v_kph",
+            "gear",
+            "rpm",
+            "curvature_1pm",
+            "is_straight",
+            "limit",
+        ])
+        for (x, y), s, v, g, r, curv, lim in zip(
+            pts, dists, speeds, gears, rpms, curvatures, limiters
+        ):
+            # is_straight = 1 if abs(curv) < 1e-6 else 0    # was 1e-6, change to 1/2000 m
+            is_straight = 1 if abs(curv) < 5e-4 else 0
+            writer.writerow([x, y, s, v, v * 3.6, g, r, curv, is_straight, lim])
 
 def _arc_segment(p0: Tuple[float, float],
                  p1: Tuple[float, float],
@@ -209,8 +226,9 @@ def compute_speed_profile(
     sweeps: int = 8,
     curv_smoothing: int = 3,
     speed_smoothing: int = 3,
-) -> Tuple[List[float], float]:
-    """Compute a speed profile and lap time for *pts*.
+
+) -> Tuple[List[float], float, List[float], List[str]]:
+    """Compute a speed profile, curvature and limiting factor for *pts*.
 
     The solver performs a number of forward and backward sweeps along the
     resampled path, applying acceleration limits from the engine, aerodynamics
@@ -243,27 +261,42 @@ def compute_speed_profile(
         R = R_s
         
     v = [math.sqrt(max(0.0, bp.mu * bp.g * max(R[i], 1.0))) * 0.97 for i in range(n)]
-
+    limit_reason: List[str] = ["corner"] * n
+    
     for _ in range(sweeps):
         for i in range(n - 1):
             v_i = v[i]
             gear = select_gear(v_i, bp)
             Fw = wheel_force(v_i, bp, gear)
-            a_pow = (Fw - aero_drag(v_i, bp) - roll_res(bp)) / bp.m
-            a_pow = min(a_pow, bp.a_wheelie_max)
-            a_pow = max(a_pow, -bp.a_brake)
+            a_base = (Fw - aero_drag(v_i, bp) - roll_res(bp)) / bp.m
+            limiter = "accel" if a_base >= 0 else "braking"
+            if a_base >= 0 and a_base > bp.a_wheelie_max:
+                a_base = bp.a_wheelie_max
+                limiter = "wheelie"
+            if a_base < 0 and a_base < -bp.a_brake:
+                a_base = -bp.a_brake
+                limiter = "stoppie"
             if use_traction_circle:
-                a_pow = min(a_pow, traction_circle_cap(v_i, R[i], bp))
-            v_next = math.sqrt(max(0.0, v_i * v_i + 2 * a_pow * ds[i]))
+                cap = traction_circle_cap(v_i, R[i], bp)
+                if abs(a_base) > cap:
+                    a_base = cap if a_base >= 0 else -cap
+                    limiter = "corner"
+            v_next = math.sqrt(max(0.0, v_i * v_i + 2 * a_base * ds[i]))
             if v_next < v[i + 1]:
                 v[i + 1] = v_next
+                limit_reason[i + 1] = limiter
         for i in range(n - 2, -1, -1):
             a_brk = bp.a_brake
+            limiter = "stoppie"
             if use_traction_circle and trail_braking:
-                a_brk = min(a_brk, traction_circle_cap(v[i + 1], R[i + 1], bp))
+                cap = traction_circle_cap(v[i + 1], R[i + 1], bp)
+                if cap < a_brk:
+                    a_brk = cap
+                    limiter = "corner"
             v_prev = math.sqrt(max(0.0, v[i + 1] * v[i + 1] + 2 * a_brk * ds[i]))
             if v_prev < v[i]:
                 v[i] = v_prev
+                limit_reason[i] = "braking" if limiter == "stoppie" else limiter
         v_loop = min(v[0], v[-1])
         v[0] = v[-1] = v_loop
 
@@ -276,12 +309,31 @@ def compute_speed_profile(
         v_loop = min(v[0], v[-1])
         v[0] = v[-1] = v_loop
 
+    # recompute limiting factors for deceleration segments
+    for i in range(1, n):
+        ds_i = ds[i - 1]
+        if ds_i <= 0:
+            continue
+        a_seg = (v[i] * v[i] - v[i - 1] * v[i - 1]) / (2 * ds_i)
+        if a_seg < 0:
+            dec = -a_seg
+            if dec >= bp.a_brake - 1e-6:
+                limit_reason[i] = "stoppie"
+            elif use_traction_circle and dec >= traction_circle_cap(v[i], R[i], bp) - 1e-6:
+                limit_reason[i] = "corner"
+            else:
+                limit_reason[i] = "braking"
+
     lap_time = 0.0
     for i in range(n - 1):
         v_avg = max(1e-3, 0.5 * (v[i] + v[i + 1]))
         lap_time += ds[i] / v_avg
 
-    return v, lap_time
+    curvatures = [0.0] * n
+    for i in range(n):
+        curvatures[i] = 1.0 / max(R[i], 1e-9)
+
+    return v, lap_time, curvatures, limit_reason
 
 
 @dataclass
@@ -393,7 +445,7 @@ def main():
         T_peak=args.T_peak,
     )
 
-    speeds, lap_time = compute_speed_profile(
+    speeds, lap_time, curvatures, limiters = compute_speed_profile(
         pts,
         bp,
         use_traction_circle=args.traction_circle,
@@ -409,7 +461,7 @@ def main():
         gears.append(bp.gears.index(gear_ratio) + 1)
         rpms.append(engine_rpm(v, bp, gear_ratio))
         
-    save_csv(args.output, pts, dists, speeds, gears, rpms)
+    save_csv(args.output, pts, dists, speeds, gears, rpms, curvatures, limiters)
     print(f"Lap time: {lap_time:.2f} s")
 
 if __name__ == "__main__":
