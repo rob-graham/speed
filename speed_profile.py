@@ -13,61 +13,114 @@ options.
 import argparse
 import csv
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Tuple, Iterable
 import math
 
 
-def load_csv(path: str) -> List[Tuple[float, float]]:
-    """Load x,y coordinates from a CSV file with two columns and no header."""
-    pts: List[Tuple[float, float]] = []
-    with open(path, newline='') as f:
-        reader = csv.reader(f)
+@dataclass
+class TrackPoint:
+    """A single sample on the racing line.
+
+    ``section`` describes the upcoming segment from this point onwards and is
+    either ``"straight"`` or ``"corner"``.  ``camber`` is the banking angle of
+    the surface (positive slopes down to the rider's right) and ``grade`` is
+    the longitudinal slope (positive when climbing).  All angles are in
+    radians.
+    """
+
+    x: float
+    y: float
+    section: str
+    camber: float
+    grade: float
+
+
+def load_csv(path: str) -> List[TrackPoint]:
+    """Load track points from a CSV file.
+
+    The expected columns with a header row are ``x_m``, ``y_m``,
+    ``section_type`` (``straight`` or ``corner``), ``camber_rad`` and
+    ``grade_rad``.
+    """
+
+    pts: List[TrackPoint] = []
+    with open(path, newline="") as f:
+        reader = csv.DictReader(f)
         for row in reader:
             if not row:
                 continue
-            x, y = map(float, row[:2])
-            pts.append((x, y))
+            pts.append(
+                TrackPoint(
+                    float(row["x_m"]),
+                    float(row["y_m"]),
+                    row.get("section_type", "corner").strip().lower(),
+                    float(row.get("camber_rad", 0.0)),
+                    float(row.get("grade_rad", 0.0)),
+                )
+            )
     return pts
 
 
-def cumulative_distance(pts: List[Tuple[float, float]]) -> List[float]:
+def cumulative_distance(pts: List[TrackPoint]) -> List[float]:
     """Return cumulative distance along *pts* starting from zero."""
     s = [0.0]
     for i in range(1, len(pts)):
-        x0, y0 = pts[i - 1]
-        x1, y1 = pts[i]
+        x0, y0 = pts[i - 1].x, pts[i - 1].y
+        x1, y1 = pts[i].x, pts[i].y
         s.append(s[-1] + math.hypot(x1 - x0, y1 - y0))
     return s
 
-def save_csv(path: str,
-             pts: List[Tuple[float, float]],
-             dists: List[float],
-             speeds: List[float],
-             gears: List[int],
-             rpms: List[float],
-             curvatures: List[float],
-             limiters: List[str]) -> None:
-    """Save results including curvature and limiting factor to CSV."""
+
+def save_csv(
+    path: str,
+    pts: List[TrackPoint],
+    dists: List[float],
+    speeds: List[float],
+    gears: List[int],
+    rpms: List[float],
+    curvatures: List[float],
+    limiters: List[str],
+) -> None:
+    """Save results including curvature, section type and limiting factor."""
+
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow([
-            "x_m",
-            "y_m",
-            "s_m",
-            "v_mps",
-            "v_kph",
-            "gear",
-            "rpm",
-            "curvature_1pm",
-            "is_straight",
-            "limit",
-        ])
-        for (x, y), s, v, g, r, curv, lim in zip(
+        writer.writerow(
+            [
+                "x_m",
+                "y_m",
+                "s_m",
+                "v_mps",
+                "v_kph",
+                "gear",
+                "rpm",
+                "curvature_1pm",
+                "section_type",
+                "camber_rad",
+                "grade_rad",
+                "limit",
+            ]
+        )
+        for pt, s, v, g, r, curv, lim in zip(
             pts, dists, speeds, gears, rpms, curvatures, limiters
         ):
-            # is_straight = 1 if abs(curv) < 1e-6 else 0    # was 1e-6, change to 1/2000 m
-            is_straight = 1 if abs(curv) < 5e-4 else 0
-            writer.writerow([x, y, s, v, v * 3.6, g, r, curv, is_straight, lim])
+            writer.writerow(
+                [
+                    pt.x,
+                    pt.y,
+                    s,
+                    v,
+                    v * 3.6,
+                    g,
+                    r,
+                    curv,
+                    pt.section,
+                    pt.camber,
+                    pt.grade,
+                    lim,
+                ]
+            )
+
 
 def _arc_segment(p0: Tuple[float, float],
                  p1: Tuple[float, float],
@@ -115,35 +168,42 @@ def _arc_segment(p0: Tuple[float, float],
     ]
 
 
-def resample(points: List[Tuple[float, float]], step: float) -> List[Tuple[float, float]]:
+def resample(points: List[TrackPoint], step: float) -> List[TrackPoint]:
     """Resample *points* using circular arcs so that adjacent points are
-    approximately *step* metres apart."""
+    approximately *step* metres apart.
+
+    The metadata (section type, camber and grade) for new points is copied from
+    the start of each segment.
+    """
+
     if len(points) < 3:
         return points
 
-    if math.hypot(points[0][0] - points[-1][0], points[0][1] - points[-1][1]) > 1e-6:
+    if math.hypot(points[0].x - points[-1].x, points[0].y - points[-1].y) > 1e-6:
         points = points + [points[0]]
 
-    resampled: List[Tuple[float, float]] = []
+    resampled: List[TrackPoint] = []
     n = len(points) - 1  # last equals first
     for i in range(n):
-        p_prev = points[i - 1]
-        p_curr = points[i]
-        p_next = points[(i + 1) % n]
+        p_prev = (points[i - 1].x, points[i - 1].y)
+        p_curr = (points[i].x, points[i].y)
+        p_next = (points[(i + 1) % n].x, points[(i + 1) % n].y)
         seg = _arc_segment(p_prev, p_curr, p_next, step)
-        if i == 0:
-            resampled.extend(seg)
-        else:
-            resampled.extend(seg[1:])
+        pts_iter = seg if i == 0 else seg[1:]
+        for x, y in pts_iter:
+            resampled.append(
+                TrackPoint(x, y, points[i].section, points[i].camber, points[i].grade)
+            )
 
     resampled.append(resampled[0])
     return resampled
 
-def _curvature(p0: Tuple[float, float], p1: Tuple[float, float], p2: Tuple[float, float]) -> float:
+
+def _curvature(p0: TrackPoint, p1: TrackPoint, p2: TrackPoint) -> float:
     """Return curvature (1/radius) for three consecutive points."""
-    x1, y1 = p0
-    x2, y2 = p1
-    x3, y3 = p2
+    x1, y1 = p0.x, p0.y
+    x2, y2 = p1.x, p1.y
+    x3, y3 = p2.x, p2.y
     a = math.hypot(x2 - x1, y2 - y1)
     b = math.hypot(x3 - x2, y3 - y2)
     c = math.hypot(x3 - x1, y3 - y1)
@@ -204,10 +264,21 @@ def roll_res(bp: BikeParams) -> float:
     return bp.Crr * bp.m * bp.g
 
 
-def traction_circle_cap(v: float, radius: float, bp: BikeParams, eps: float = 0.0) -> float:
+def traction_circle_cap(
+    v: float,
+    radius: float,
+    bp: BikeParams,
+    camber: float,
+    grade: float,
+    eps: float = 0.0,
+) -> float:
+    """Return longitudinal acceleration limit from the traction circle."""
+
     radius = max(radius, 1.0)
-    a_lat = (v * v) / radius
-    inside = (bp.mu * bp.g) ** 2 * (1.0 - eps) - a_lat * a_lat
+    # Lateral demand is reduced by track camber.
+    a_lat = (v * v) / radius - bp.g * math.sin(camber)
+    a_max = bp.mu * bp.g * math.cos(grade) * math.cos(camber)
+    inside = (a_max * a_max) * (1.0 - eps) - a_lat * a_lat
     return math.sqrt(max(0.0, inside))
 
 
@@ -218,15 +289,15 @@ def select_gear(v: float, bp: BikeParams) -> float:
             return g
     return bp.gears[-1]
 
+
 def compute_speed_profile(
-    pts: List[Tuple[float, float]],
+    pts: List[TrackPoint],
     bp: BikeParams,
     use_traction_circle: bool = False,
     trail_braking: bool = False,
     sweeps: int = 8,
     curv_smoothing: int = 3,
     speed_smoothing: int = 3,
-
 ) -> Tuple[List[float], float, List[float], List[str]]:
     """Compute a speed profile, curvature and limiting factor for *pts*.
 
@@ -245,55 +316,75 @@ def compute_speed_profile(
     if n < 3:
         return [0.0] * n, 0.0
 
-    x = [p[0] for p in pts]
-    y = [p[1] for p in pts]
+    x = [p.x for p in pts]
+    y = [p.y for p in pts]
+    camber = [p.camber for p in pts]
+    grade = [p.grade for p in pts]
+    section = [p.section for p in pts]
     ds = [math.hypot(x[i + 1] - x[i], y[i + 1] - y[i]) for i in range(n - 1)]
+
     R = [0.0] * n
     for i in range(1, n - 1):
         curv = _curvature(pts[i - 1], pts[i], pts[i + 1])
-        R[i] = 1.0 / max(abs(curv), 1e-9)
+        radius = 1.0 / max(abs(curv), 1e-9)
+        R[i] = radius if section[i] == "corner" else 1e9
     R[0] = R[1]
     R[-1] = R[-2]
+
     for _ in range(curv_smoothing):
         R_s = R.copy()
         for i in range(n):
             R_s[i] = 0.25 * R[(i - 1) % n] + 0.5 * R[i] + 0.25 * R[(i + 1) % n]
         R = R_s
-        
-    v = [math.sqrt(max(0.0, bp.mu * bp.g * max(R[i], 1.0))) * 0.97 for i in range(n)]
-    limit_reason: List[str] = ["corner"] * n
-    
+
+    v: List[float] = []
+    limit_reason: List[str] = []
+    for i in range(n):
+        if section[i] == "corner":
+            a_lat_cap = bp.mu * bp.g * math.cos(grade[i]) * math.cos(camber[i])
+            v0 = math.sqrt(
+                max(0.0, R[i] * (a_lat_cap + bp.g * math.sin(camber[i])))
+            )
+            v.append(v0)
+            limit_reason.append("corner")
+        else:
+            v.append(100.0)  # large seed for straights
+            limit_reason.append("power")
+
     for _ in range(sweeps):
         for i in range(n - 1):
             v_i = v[i]
             gear = select_gear(v_i, bp)
             Fw = wheel_force(v_i, bp, gear)
             a_base = (Fw - aero_drag(v_i, bp) - roll_res(bp)) / bp.m
-            limiter = "accel" if a_base >= 0 else "braking"
-            if a_base >= 0 and a_base > bp.a_wheelie_max:
-                a_base = bp.a_wheelie_max
+            a = a_base - bp.g * math.sin(grade[i])
+            limiter = "accel" if a >= 0 else "braking"
+            if a >= 0 and a > bp.a_wheelie_max:
+                a = bp.a_wheelie_max
                 limiter = "wheelie"
-            if a_base < 0 and a_base < -bp.a_brake:
-                a_base = -bp.a_brake
+            if a < 0 and -a > bp.a_brake:
+                a = -bp.a_brake
                 limiter = "stoppie"
             if use_traction_circle:
-                cap = traction_circle_cap(v_i, R[i], bp)
-                if abs(a_base) > cap:
-                    a_base = cap if a_base >= 0 else -cap
+                cap = traction_circle_cap(v_i, R[i], bp, camber[i], grade[i])
+                if abs(a) > cap:
+                    a = cap if a >= 0 else -cap
                     limiter = "corner"
-            v_next = math.sqrt(max(0.0, v_i * v_i + 2 * a_base * ds[i]))
+            v_next = math.sqrt(max(0.0, v_i * v_i + 2 * a * ds[i]))
             if v_next < v[i + 1]:
                 v[i + 1] = v_next
                 limit_reason[i + 1] = limiter
+
         for i in range(n - 2, -1, -1):
             a_brk = bp.a_brake
             limiter = "stoppie"
             if use_traction_circle and trail_braking:
-                cap = traction_circle_cap(v[i + 1], R[i + 1], bp)
+                cap = traction_circle_cap(v[i + 1], R[i + 1], bp, camber[i + 1], grade[i + 1])
                 if cap < a_brk:
                     a_brk = cap
                     limiter = "corner"
-            v_prev = math.sqrt(max(0.0, v[i + 1] * v[i + 1] + 2 * a_brk * ds[i]))
+            a_tot = a_brk + bp.g * math.sin(grade[i])
+            v_prev = math.sqrt(max(0.0, v[i + 1] * v[i + 1] + 2 * a_tot * ds[i]))
             if v_prev < v[i]:
                 v[i] = v_prev
                 limit_reason[i] = "braking" if limiter == "stoppie" else limiter
@@ -319,7 +410,7 @@ def compute_speed_profile(
             dec = -a_seg
             if dec >= bp.a_brake - 1e-6:
                 limit_reason[i] = "stoppie"
-            elif use_traction_circle and dec >= traction_circle_cap(v[i], R[i], bp) - 1e-6:
+            elif use_traction_circle and dec >= traction_circle_cap(v[i], R[i], bp, camber[i], grade[i]) - 1e-6:
                 limit_reason[i] = "corner"
             else:
                 limit_reason[i] = "braking"
@@ -388,27 +479,27 @@ def _parse_gears(s: str) -> Tuple[float, ...]:
 
 def main():
     parser = argparse.ArgumentParser(description="Generate speed profile for a track")
-    parser.add_argument("input", help="Input CSV with x,y points")
-    parser.add_argument("output", help="Output CSV with x,y,v")
+    parser.add_argument("input", help="Input track CSV")
+    parser.add_argument("output", help="Output CSV with results")
     parser.add_argument("--step", type=float, default=2.0, help="Resampling distance in metres")
+    parser.add_argument("--params-file", help="CSV with motorcycle parameters", default=None)
 
-    # Motorcycle and environment parameters
-    parser.add_argument("--rho", type=float, default=1.225)
-    parser.add_argument("--g", type=float, default=9.81)
-    parser.add_argument("--m", type=float, default=265.0)
-    parser.add_argument("--CdA", type=float, default=0.35)
-    parser.add_argument("--Crr", type=float, default=0.015)
-    parser.add_argument("--rw", type=float, default=0.31)
-    parser.add_argument("--mu", type=float, default=1.20)
-    parser.add_argument("--a_wheelie_max", type=float, default=1.0 * 9.81)
-    parser.add_argument("--a_brake", type=float, default=1.2 * 9.81)
-    parser.add_argument("--shift_rpm", type=float, default=16000.0)
-    parser.add_argument("--primary", type=float, default=85.0/41.0)
-    parser.add_argument("--final_drive", type=float, default=47.0/16.0)
-    parser.add_argument("--gears", type=str, default="2.583, 2.000, 1.667, 1.444, 1.286, 1.150",
-                        help="Comma separated gear ratios")
-    parser.add_argument("--eta_driveline", type=float, default=0.95)
-    parser.add_argument("--T_peak", type=float, default=63.0)
+    # Motorcycle and environment parameters (override file values if provided)
+    parser.add_argument("--rho", type=float, default=None)
+    parser.add_argument("--g", type=float, default=None)
+    parser.add_argument("--m", type=float, default=None)
+    parser.add_argument("--CdA", type=float, default=None)
+    parser.add_argument("--Crr", type=float, default=None)
+    parser.add_argument("--rw", type=float, default=None)
+    parser.add_argument("--mu", type=float, default=None)
+    parser.add_argument("--a_wheelie_max", type=float, default=None)
+    parser.add_argument("--a_brake", type=float, default=None)
+    parser.add_argument("--shift_rpm", type=float, default=None)
+    parser.add_argument("--primary", type=float, default=None)
+    parser.add_argument("--final_drive", type=float, default=None)
+    parser.add_argument("--gears", type=str, default=None, help="Comma separated gear ratios")
+    parser.add_argument("--eta_driveline", type=float, default=None)
+    parser.add_argument("--T_peak", type=float, default=None)
 
     parser.add_argument("--traction-circle", action="store_true",
                         help="Enable traction circle for acceleration")
@@ -420,30 +511,45 @@ def main():
                         help="Neighbour-averaging passes for corner radius")
     parser.add_argument("--speed-smooth", type=int, default=3,
                         help="Neighbour-averaging passes for final speeds")
-    
+
     args = parser.parse_args()
 
     pts = load_csv(args.input)
     pts = resample(pts, args.step)
     dists = cumulative_distance(pts)
-    
-    bp = BikeParams(
-        rho=args.rho,
-        g=args.g,
-        m=args.m,
-        CdA=args.CdA,
-        Crr=args.Crr,
-        rw=args.rw,
-        mu=args.mu,
-        a_wheelie_max=args.a_wheelie_max,
-        a_brake=args.a_brake,
-        shift_rpm=args.shift_rpm,
-        primary=args.primary,
-        final_drive=args.final_drive,
-        gears=_parse_gears(args.gears),
-        eta_driveline=args.eta_driveline,
-        T_peak=args.T_peak,
-    )
+
+    bp = BikeParams()
+
+    if args.params_file:
+        with open(args.params_file, newline="") as f:
+            reader = csv.reader(f)
+            for row in reader:
+                if len(row) < 2:
+                    continue
+                key, value = row[0], row[1]
+                if hasattr(bp, key):
+                    setattr(bp, key, float(value))
+
+    def _override(name: str, value):
+        if value is not None:
+            setattr(bp, name, value)
+
+    _override("rho", args.rho)
+    _override("g", args.g)
+    _override("m", args.m)
+    _override("CdA", args.CdA)
+    _override("Crr", args.Crr)
+    _override("rw", args.rw)
+    _override("mu", args.mu)
+    _override("a_wheelie_max", args.a_wheelie_max)
+    _override("a_brake", args.a_brake)
+    _override("shift_rpm", args.shift_rpm)
+    _override("primary", args.primary)
+    _override("final_drive", args.final_drive)
+    if args.gears is not None:
+        bp.gears = _parse_gears(args.gears)
+    _override("eta_driveline", args.eta_driveline)
+    _override("T_peak", args.T_peak)
 
     speeds, lap_time, curvatures, limiters = compute_speed_profile(
         pts,
@@ -460,7 +566,7 @@ def main():
         gear_ratio = select_gear(v, bp)
         gears.append(bp.gears.index(gear_ratio) + 1)
         rpms.append(engine_rpm(v, bp, gear_ratio))
-        
+
     save_csv(args.output, pts, dists, speeds, gears, rpms, curvatures, limiters)
     print(f"Lap time: {lap_time:.2f} s")
 
