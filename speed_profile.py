@@ -441,7 +441,7 @@ def traction_circle_cap(
 ) -> float:
     """Return longitudinal acceleration limit from the traction circle."""
 
-    radius = max(radius, 1.0)
+    radius = max(abs(radius), 1.0)
     # Lateral demand is reduced by track camber.
     a_lat = (v * v) / radius - bp.g * math.sin(camber)
     a_max = bp.mu * bp.g * math.cos(grade) * math.cos(camber)
