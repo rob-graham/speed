@@ -273,7 +273,10 @@ def resample(points: List[TrackPoint], step: float) -> List[TrackPoint]:
     resampled: List[TrackPoint] = []
     n = len(points) - 1  # last equals first
     i = 0
+    skip_last = False
     while i < n:
+        if skip_last and i == n - 1:
+            break
         pt = points[i]
         if pt.section == "corner":
             j = i + 1
@@ -294,15 +297,21 @@ def resample(points: List[TrackPoint], step: float) -> List[TrackPoint]:
                     )
                 i = j - 1
             else:
-                p_prev = (points[i - 1].x, points[i - 1].y)
-                p_curr = (pt.x, pt.y)
-                p_next = (points[(i + 1) % n].x, points[(i + 1) % n].y)
-                seg = _arc_segment(p_prev, p_curr, p_next, step)
+                prev_pt = points[(i - 1) % n]
+                next_pt = points[(i + 1) % n]
+                seg = _arc_from_radius(
+                    (prev_pt.x, prev_pt.y),
+                    (next_pt.x, next_pt.y),
+                    pt.radius_m,
+                    step,
+                )
                 pts_iter = seg if not resampled else seg[1:]
                 for x, y in pts_iter:
                     resampled.append(
                         TrackPoint(x, y, pt.section, pt.camber, pt.grade, pt.radius_m)
                     )
+                if i == 0:
+                    skip_last = True
         else:
             p_curr = (pt.x, pt.y)
             p_next = (points[(i + 1) % n].x, points[(i + 1) % n].y)
@@ -517,7 +526,7 @@ def compute_speed_profile(
         v_smooth = v.copy()
         for i in range(n):
             v_smooth[i] = 0.25 * v[(i - 1) % n] + 0.5 * v[i] + 0.25 * v[(i + 1) % n]
-            v = v_smooth
+        v = v_smooth
         v_loop = min(v[0], v[-1])
         v[0] = v[-1] = v_loop
 
