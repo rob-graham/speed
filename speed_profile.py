@@ -92,7 +92,17 @@ def save_csv(
     limiters: List[str],
 ) -> None:
     """Save results including curvature, section type and limiting factor."""
-
+    n = len(pts)
+    assert (
+        n
+        == len(dists)
+        == len(speeds)
+        == len(gears)
+        == len(rpms)
+        == len(curvatures)
+        == len(limiters)
+    ), "all input lists must have the same length"
+    
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(
