@@ -13,7 +13,7 @@ options.
 import argparse
 import csv
 from dataclasses import dataclass
-from typing import List, Tuple, Iterable, Optional, Dict
+from typing import List, Tuple, Iterable
 import math
 
 
@@ -33,15 +33,15 @@ class TrackPoint:
     section: str
     camber: float
     grade: float
-    radius_m: Optional[float] = None
-    
+    radius_m: float = 0.0
+
 
 def load_csv(path: str) -> List[TrackPoint]:
     """Load track points from a CSV file.
 
     The expected columns with a header row are ``x_m``, ``y_m``,
-    ``section_type`` (``straight`` or ``corner``), ``radius_m`` (optional
-    signed corner radius), ``camber_rad`` and ``grade_rad``.
+    ``section_type`` (``straight`` or ``corner``), ``camber_rad``,
+    ``grade_rad`` and optionally ``radius_m`` (signed, metres).
     """
 
     pts: List[TrackPoint] = []
@@ -50,8 +50,6 @@ def load_csv(path: str) -> List[TrackPoint]:
         for row in reader:
             if not row:
                 continue
-            radius_val = row.get("radius_m")
-            radius = float(radius_val) if radius_val not in (None, "") else None
             pts.append(
                 TrackPoint(
                     float(row["x_m"]),
@@ -59,7 +57,7 @@ def load_csv(path: str) -> List[TrackPoint]:
                     row.get("section_type", "corner").strip().lower(),
                     float(row.get("camber_rad", 0.0)),
                     float(row.get("grade_rad", 0.0)),
-                    radius,
+                    float(row.get("radius_m", 0.0)),
                 )
             )
     return pts
@@ -126,10 +124,12 @@ def save_csv(
             )
 
 
-def _arc_segment(p0: Tuple[float, float],
-                 p1: Tuple[float, float],
-                 p2: Tuple[float, float],
-                 step: float) -> List[Tuple[float, float]]:
+def _arc_segment(
+    p0: Tuple[float, float],
+    p1: Tuple[float, float],
+    p2: Tuple[float, float],
+    step: float,
+) -> List[Tuple[float, float]]:
     """Return points from *p1* to *p2* following a circular arc through
     (*p0*, *p1*, *p2*).  If the points are nearly collinear a straight line is
     generated instead."""
@@ -172,79 +172,87 @@ def _arc_segment(p0: Tuple[float, float],
     ]
 
 
-def _arc_from_radius(start: Tuple[float, float],
-                     end: Tuple[float, float],
-                     radius: float,
-                     step: float) -> List[Tuple[float, float]]:
-    """Return points along an arc of *radius* from *start* to *end*.
+def _arc_from_radius(
+    p0: Tuple[float, float],
+    p1: Tuple[float, float],
+    radius: float,
+    step: float,
+) -> List[Tuple[float, float]]:
+    """Return points along a circular arc from *p0* to *p1* with signed
+    *radius*.
 
-    The sign of *radius* determines the direction: positive for a left turn
-    (counter-clockwise) and negative for a right turn.
+    A positive radius produces a counter-clockwise sweep from *p0* to *p1* when
+    travelling in the direction of the chord; a negative radius sweeps clockwise.
+    If the radius is zero the arc degenerates to a straight line.
     """
-    sx, sy = start
-    ex, ey = end
-    r = abs(radius)
-    dx = ex - sx
-    dy = ey - sy
+
+    if radius == 0.0 or math.isinf(radius):
+        return _arc_segment(p0, p0, p1, step)
+
+    x0, y0 = p0
+    x1, y1 = p1
+    dx = x1 - x0
+    dy = y1 - y0
     chord = math.hypot(dx, dy)
-    if chord == 0 or r < chord / 2:
-        return [start, end]
-    angle = 2.0 * math.asin(chord / (2.0 * r))
-    mx = 0.5 * (sx + ex)
-    my = 0.5 * (sy + ey)
-    h = math.sqrt(max(r * r - (chord * chord) / 4.0, 0.0))
-    ux = dx / chord
-    uy = dy / chord
-    nx = -uy
-    ny = ux
+    if chord == 0.0:
+        return [(x0, y0)]
+
+    r = abs(radius)
+    # Clamp to valid geometry.  If the requested radius is too small for the
+    # chord length, fall back to the minimum possible radius.
+    if r < chord / 2:
+        r = chord / 2
+
+    mx, my = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+    h = math.sqrt(max(r * r - (chord / 2.0) ** 2, 0.0))
+    ux, uy = dx / chord, dy / chord
+    px, py = -uy, ux
     sign = 1.0 if radius >= 0 else -1.0
-    cx = mx + sign * h * nx
-    cy = my + sign * h * ny
-    th1 = math.atan2(sy - cy, sx - cx)
-    th2 = math.atan2(ey - cy, ex - cx)
-    if sign > 0 and th2 <= th1:
-        th2 += 2 * math.pi
-    if sign < 0 and th2 >= th1:
-        th2 -= 2 * math.pi
-    arc_len = r * abs(th2 - th1)
+    cx = mx + sign * h * px
+    cy = my + sign * h * py
+
+    th0 = math.atan2(y0 - cy, x0 - cx)
+    th1 = math.atan2(y1 - cy, x1 - cx)
+    if sign > 0 and th1 <= th0:
+        th1 += 2 * math.pi
+    elif sign < 0 and th1 >= th0:
+        th1 -= 2 * math.pi
+
+    arc_len = r * abs(th1 - th0)
     n = max(1, int(math.floor(arc_len / step)))
     return [
-        (cx + r * math.cos(th1 + (j / n) * (th2 - th1)),
-         cy + r * math.sin(th1 + (j / n) * (th2 - th1)))
+        (cx + r * math.cos(th0 + (j / n) * (th1 - th0)),
+         cy + r * math.sin(th0 + (j / n) * (th1 - th0)))
         for j in range(n + 1)
     ]
 
 
-def _tangent_points(prev: TrackPoint,
-                    corner: TrackPoint,
-                    nxt: TrackPoint,
-                    radius: float) -> Optional[Tuple[Tuple[float, float], Tuple[float, float]]]:
-    """Return entry and exit points for a circular arc of *radius*.
+def _chain_arcs(run: List[TrackPoint], step: float) -> List[TrackPoint]:
+    """Return a sequence of points following chained arcs through *run*.
 
-    When the incoming and outgoing segments are too short to accommodate the
-    requested radius ``None`` is returned.
+    Each arc connects a point to the next using that point's ``radius_m``.
     """
-    px, py = prev.x, prev.y
-    cx, cy = corner.x, corner.y
-    nx, ny = nxt.x, nxt.y
-    v_in = (cx - px, cy - py)
-    v_out = (nx - cx, ny - cy)
-    d_in = math.hypot(*v_in)
-    d_out = math.hypot(*v_out)
-    if d_in == 0 or d_out == 0:
-        return None
-    u_in = (v_in[0] / d_in, v_in[1] / d_in)
-    u_out = (v_out[0] / d_out, v_out[1] / d_out)
-    dot = max(-1.0, min(1.0, u_in[0] * u_out[0] + u_in[1] * u_out[1]))
-    phi = math.acos(dot)
-    if phi == 0:
-        return None
-    t = abs(radius) * math.tan(phi / 2.0)
-    if t > d_in or t > d_out:
-        return None
-    entry = (cx - u_in[0] * t, cy - u_in[1] * t)
-    exit = (cx + u_out[0] * t, cy + u_out[1] * t)
-    return entry, exit
+
+    resampled: List[TrackPoint] = []
+    for i in range(len(run) - 1):
+        start = run[i]
+        end = run[i + 1]
+        seg = _arc_from_radius((start.x, start.y), (end.x, end.y), start.radius_m, step)
+        pts_iter = seg if i == 0 else seg[1:]
+        for x, y in pts_iter:
+            resampled.append(
+                TrackPoint(x, y, start.section, start.camber, start.grade, start.radius_m)
+            )
+    if resampled:
+        resampled[-1] = TrackPoint(
+            run[-1].x,
+            run[-1].y,
+            run[-1].section,
+            run[-1].camber,
+            run[-1].grade,
+            run[-1].radius_m,
+        )
+    return resampled
 
 
 def resample(points: List[TrackPoint], step: float) -> List[TrackPoint]:
@@ -262,52 +270,51 @@ def resample(points: List[TrackPoint], step: float) -> List[TrackPoint]:
     if math.hypot(points[0].x - points[-1].x, points[0].y - points[-1].y) > 1e-6:
         points = points + [points[0]]
 
-    n = len(points) - 1  # last equals first
-    start_override: Dict[int, Tuple[float, float]] = {}
-    arcs: Dict[int, Tuple[Tuple[float, float], Tuple[float, float], float]] = {}
-
-    for i in range(n):
-        pt = points[i]
-        if (
-            pt.section == "corner"
-            and pt.radius_m is not None
-            and points[i - 1].section == "straight"
-            and points[(i + 1) % n].section == "straight"
-        ):
-            tang = _tangent_points(points[i - 1], pt, points[(i + 1) % n], pt.radius_m)
-            if tang is not None:
-                entry, exit = tang
-                start_override[i] = entry
-                start_override[(i + 1) % n] = exit
-                arcs[i] = (entry, exit, pt.radius_m)
-
     resampled: List[TrackPoint] = []
-    for i in range(n):
-        start = start_override.get(i, (points[i].x, points[i].y))
-        j = (i + 1) % n
-        end = start_override.get(j, (points[j].x, points[j].y))
-
-        if i in arcs:
-            entry, exit, r = arcs[i]
-            seg = _arc_from_radius(entry, exit, r, step)
-            section = points[i].section
-            camber = points[i].camber
-            grade = points[i].grade
-            radius_val = r
+    n = len(points) - 1  # last equals first
+    i = 0
+    while i < n:
+        pt = points[i]
+        if pt.section == "corner":
+            j = i + 1
+            while j < n and points[j].section == "corner":
+                j += 1
+            if j - i > 1:
+                seg_pts = _chain_arcs(points[i:j], step)
+                pts_iter = seg_pts if not resampled else seg_pts[1:]
+                resampled.extend(pts_iter)
+                last = points[j - 1]
+                next_pt = points[j]
+                seg = _arc_from_radius(
+                    (last.x, last.y), (next_pt.x, next_pt.y), last.radius_m, step
+                )
+                for x, y in seg[1:]:
+                    resampled.append(
+                        TrackPoint(x, y, last.section, last.camber, last.grade, last.radius_m)
+                    )
+                i = j - 1
+            else:
+                p_prev = (points[i - 1].x, points[i - 1].y)
+                p_curr = (pt.x, pt.y)
+                p_next = (points[(i + 1) % n].x, points[(i + 1) % n].y)
+                seg = _arc_segment(p_prev, p_curr, p_next, step)
+                pts_iter = seg if not resampled else seg[1:]
+                for x, y in pts_iter:
+                    resampled.append(
+                        TrackPoint(x, y, pt.section, pt.camber, pt.grade, pt.radius_m)
+                    )
         else:
-            prev_idx = (i - 1) % n
-            prev = start_override.get(prev_idx, (points[prev_idx].x, points[prev_idx].y))
-            if points[i].section == "straight":
-                prev = start  # ensure straight line
-            seg = _arc_segment(prev, start, end, step)
-            section = points[i].section
-            camber = points[i].camber
-            grade = points[i].grade
-            radius_val = points[i].radius_m
-
-        pts_iter = seg if not resampled else seg[1:]
-        for x, y in pts_iter:
-            resampled.append(TrackPoint(x, y, section, camber, grade, radius_val))
+            p_curr = (pt.x, pt.y)
+            p_next = (points[(i + 1) % n].x, points[(i + 1) % n].y)
+            # Ignore the previous point so _arc_segment degenerates to a straight
+            # line between *p_curr* and *p_next*.
+            seg = _arc_segment(p_curr, p_curr, p_next, step)
+            pts_iter = seg if not resampled else seg[1:]
+            for x, y in pts_iter:
+                resampled.append(
+                    TrackPoint(x, y, pt.section, pt.camber, pt.grade, pt.radius_m)
+                )
+        i += 1
 
     resampled.append(resampled[0])
     return resampled
@@ -510,7 +517,7 @@ def compute_speed_profile(
         v_smooth = v.copy()
         for i in range(n):
             v_smooth[i] = 0.25 * v[(i - 1) % n] + 0.5 * v[i] + 0.25 * v[(i + 1) % n]
-        v = v_smooth
+            v = v_smooth
         v_loop = min(v[0], v[-1])
         v[0] = v[-1] = v_loop
 
@@ -547,6 +554,7 @@ class Segment:
     def points(self, x: float, y: float, heading: float, step: float) -> Tuple[List[Tuple[float, float]], float, float, float]:
         raise NotImplementedError
 
+
 @dataclass
 class Straight(Segment):
     length: float
@@ -559,6 +567,7 @@ class Straight(Segment):
             y += ds * math.sin(heading)
             pts.append((x, y))
         return pts, x, y, heading
+
 
 @dataclass
 class Arc(Segment):
@@ -577,6 +586,7 @@ class Arc(Segment):
             pts.append((x, y))
         return pts, x, y, heading
 
+
 def build_track(segments: List[Segment], step: float = 1.0,
                  start: Tuple[float, float, float] = (0.0, 0.0, 0.0)) -> List[Tuple[float, float]]:
     """Generate track points from straight and arc segments."""
@@ -586,6 +596,7 @@ def build_track(segments: List[Segment], step: float = 1.0,
         new_pts, x, y, heading = seg.points(x, y, heading, step)
         pts.extend(new_pts)
     return pts
+
 
 def _parse_gears(s: str) -> Tuple[float, ...]:
     return tuple(float(g.strip()) for g in s.split(",") if g.strip())
@@ -650,7 +661,7 @@ def main():
                     setattr(bp, key, float(value))
         if gear_rows:
             bp.gears = tuple(gear_rows[i] for i in sorted(gear_rows))
-            
+
     def _override(name: str, value):
         if value is not None:
             setattr(bp, name, value)
