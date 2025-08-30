@@ -173,7 +173,8 @@ def resample(points: List[TrackPoint], step: float) -> List[TrackPoint]:
     approximately *step* metres apart.
 
     The metadata (section type, camber and grade) for new points is copied from
-    the start of each segment.
+    the start of each segment.  Segments marked ``"straight"`` are forced to be
+    perfectly straight even if neighbouring points would otherwise form an arc.
     """
 
     if len(points) < 3:
@@ -188,6 +189,10 @@ def resample(points: List[TrackPoint], step: float) -> List[TrackPoint]:
         p_prev = (points[i - 1].x, points[i - 1].y)
         p_curr = (points[i].x, points[i].y)
         p_next = (points[(i + 1) % n].x, points[(i + 1) % n].y)
+        if points[i].section == "straight":
+            # Ignore the previous point so _arc_segment degenerates to a
+            # straight line between *p_curr* and *p_next*.
+            p_prev = p_curr
         seg = _arc_segment(p_prev, p_curr, p_next, step)
         pts_iter = seg if i == 0 else seg[1:]
         for x, y in pts_iter:
@@ -521,21 +526,21 @@ def main():
     bp = BikeParams()
 
     if args.params_file:
-            gear_rows = {}
-            with open(args.params_file, newline="") as f:
-                reader = csv.reader(f)
-                for row in reader:
-                    if len(row) < 2:
-                        continue
-                    key, value = row[0], row[1]
-                    if key == "gears":
-                        bp.gears = _parse_gears(value)
-                    elif key.startswith("gear") and key[4:].isdigit():
-                        gear_rows[int(key[4:])] = float(value)
-                    elif hasattr(bp, key):
-                        setattr(bp, key, float(value))
-            if gear_rows:
-                bp.gears = tuple(gear_rows[i] for i in sorted(gear_rows))
+        gear_rows = {}
+        with open(args.params_file, newline="") as f:
+            reader = csv.reader(f)
+            for row in reader:
+                if len(row) < 2:
+                    continue
+                key, value = row[0], row[1]
+                if key == "gears":
+                    bp.gears = _parse_gears(value)
+                elif key.startswith("gear") and key[4:].isdigit():
+                    gear_rows[int(key[4:])] = float(value)
+                elif hasattr(bp, key):
+                    setattr(bp, key, float(value))
+        if gear_rows:
+            bp.gears = tuple(gear_rows[i] for i in sorted(gear_rows))
             
     def _override(name: str, value):
         if value is not None:
