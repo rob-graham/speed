@@ -46,6 +46,7 @@ def load_csv(path: str) -> List[TrackPoint]:
     The expected columns with a header row are ``x_m``, ``y_m``,
     ``section_type`` (``straight`` or ``corner``), ``camber_rad``,
     ``grade_rad`` and optionally ``radius_m`` (signed, metres).
+    ``section_type`` defaults to ``"corner"`` when missing or empty.
     """
 
     pts: List[TrackPoint] = []
@@ -54,11 +55,14 @@ def load_csv(path: str) -> List[TrackPoint]:
         for row in reader:
             if not row:
                 continue
+            section = row.get("section_type", "").strip().lower()
+            if not section:
+                section = "corner"
             pts.append(
                 TrackPoint(
                     float(row["x_m"]),
                     float(row["y_m"]),
-                    row.get("section_type", "corner").strip().lower(),
+                    section,
                     float(row.get("camber_rad", 0.0)),
                     float(row.get("grade_rad", 0.0)),
                     float(row.get("radius_m", 0.0)),
