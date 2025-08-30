@@ -447,10 +447,10 @@ def traction_circle_cap(
 
 def select_gear(v: float, bp: BikeParams) -> float:
     """Select the highest gear that keeps engine rpm below the shift point."""
-    for g in bp.gears:
+    for g in reversed(bp.gears):
         if engine_rpm(v, bp, g) <= bp.shift_rpm:
             return g
-    return bp.gears[-1]
+    return min(bp.gears)
 
 
 def compute_speed_profile(
