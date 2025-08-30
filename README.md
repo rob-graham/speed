@@ -3,11 +3,13 @@
 This project computes a motorcycle speed profile around a race track.
 
 The core script, `speed_profile.py`, loads a CSV file containing `x_m`, `y_m`,
-`section_type`, `camber_rad` and `grade_rad` columns that describe a racing
-line. The path is resampled to a fixed spacing and a physics model including
-track camber and gradient estimates the maximum speed, gear and engine RPM at
-each point. The result is written to a new CSV file along with the cumulative
-distance travelled.
+`section_type`, optional `radius_m`, `camber_rad` and `grade_rad` columns that
+describe a racing line. The `radius_m` column allows corners to be specified by
+their signed radius (positive for left turns, negative for right). The path is
+resampled to a fixed spacing and a physics model including track camber and
+gradient estimates the maximum speed, gear and engine RPM at each point. The
+result is written to a new CSV file along with the cumulative distance
+travelled.
 
 ## Usage
 
