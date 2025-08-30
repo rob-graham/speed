@@ -26,6 +26,10 @@ python speed_profile.py input.csv output.csv [options]
 * `--speed-smooth` – neighbour-averaging passes for final speed profile
 * Command line options override any values loaded from the parameter CSV.
 
+The parameter CSV may include a `gears` row containing a comma-separated list
+of gear ratios (e.g. `gears,"2.583,2.000,1.667,1.444,1.286,1.150"`).
+Alternatively, individual `gear1`…`gear6` entries can be supplied.
+
 The output CSV contains `x`/`y` coordinates, cumulative distance, speed in both
 m/s and km/h, selected gear, engine RPM, curvature, section type, camber, grade
 and the limiting factor for that point.

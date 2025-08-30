@@ -474,7 +474,7 @@ def build_track(segments: List[Segment], step: float = 1.0,
     return pts
 
 def _parse_gears(s: str) -> Tuple[float, ...]:
-    return tuple(float(g) for g in s.split(",") if g)
+    return tuple(float(g.strip()) for g in s.split(",") if g.strip())
 
 
 def main():
@@ -521,15 +521,22 @@ def main():
     bp = BikeParams()
 
     if args.params_file:
-        with open(args.params_file, newline="") as f:
-            reader = csv.reader(f)
-            for row in reader:
-                if len(row) < 2:
-                    continue
-                key, value = row[0], row[1]
-                if hasattr(bp, key):
-                    setattr(bp, key, float(value))
-
+            gear_rows = {}
+            with open(args.params_file, newline="") as f:
+                reader = csv.reader(f)
+                for row in reader:
+                    if len(row) < 2:
+                        continue
+                    key, value = row[0], row[1]
+                    if key == "gears":
+                        bp.gears = _parse_gears(value)
+                    elif key.startswith("gear") and key[4:].isdigit():
+                        gear_rows[int(key[4:])] = float(value)
+                    elif hasattr(bp, key):
+                        setattr(bp, key, float(value))
+            if gear_rows:
+                bp.gears = tuple(gear_rows[i] for i in sorted(gear_rows))
+            
     def _override(name: str, value):
         if value is not None:
             setattr(bp, name, value)
