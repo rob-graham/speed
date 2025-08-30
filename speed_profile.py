@@ -6,6 +6,10 @@ and a simple physics model is applied to estimate the maximum speed the bike
 can maintain at each point.  The resulting profile including gear selection and
 engine RPM is written to a new CSV file.
 
+Corner sequences do not require extra points to enforce tangency – the
+resampler uses the heading of the preceding track point so the first arc of a
+run of corners joins the incoming straight smoothly.
+
 Run ``python speed_profile.py --help`` for a list of available command line
 options.
 """
@@ -177,13 +181,15 @@ def _arc_from_radius(
     p1: Tuple[float, float],
     radius: float,
     step: float,
+    heading: float | None = None,
 ) -> List[Tuple[float, float]]:
     """Return points along a circular arc from *p0* to *p1* with signed
     *radius*.
 
-    A positive radius produces a counter-clockwise sweep from *p0* to *p1* when
-    travelling in the direction of the chord; a negative radius sweeps clockwise.
-    If the radius is zero the arc degenerates to a straight line.
+    When *heading* is provided it specifies the incoming tangent direction at
+    ``p0`` (in radians from the +x axis) so the arc begins tangent to that
+    heading.  Otherwise the arc is defined solely by the chord between ``p0``
+    and ``p1``.
     """
 
     if radius == 0.0 or math.isinf(radius):
@@ -191,6 +197,26 @@ def _arc_from_radius(
 
     x0, y0 = p0
     x1, y1 = p1
+
+    if heading is not None:
+        sign = 1.0 if radius >= 0 else -1.0
+        cx = x0 - math.sin(heading) * radius
+        cy = y0 + math.cos(heading) * radius
+        r = abs(radius)
+        th0 = math.atan2(y0 - cy, x0 - cx)
+        th1 = math.atan2(y1 - cy, x1 - cx)
+        if sign > 0 and th1 <= th0:
+            th1 += 2 * math.pi
+        elif sign < 0 and th1 >= th0:
+            th1 -= 2 * math.pi
+        arc_len = r * abs(th1 - th0)
+        n = max(1, int(math.floor(arc_len / step)))
+        return [
+            (cx + r * math.cos(th0 + (j / n) * (th1 - th0)),
+             cy + r * math.sin(th0 + (j / n) * (th1 - th0)))
+            for j in range(n + 1)
+        ]
+
     dx = x1 - x0
     dy = y1 - y0
     chord = math.hypot(dx, dy)
@@ -227,17 +253,24 @@ def _arc_from_radius(
     ]
 
 
-def _chain_arcs(run: List[TrackPoint], step: float) -> List[TrackPoint]:
+def _chain_arcs(run: List[TrackPoint], step: float, prev: TrackPoint) -> List[TrackPoint]:
     """Return a sequence of points following chained arcs through *run*.
 
-    Each arc connects a point to the next using that point's ``radius_m``.
+    ``prev`` is the point immediately preceding ``run`` and is used to orient the
+    first arc so it joins tangentially to the incoming segment.
     """
 
     resampled: List[TrackPoint] = []
+    heading = math.atan2(run[0].y - prev.y, run[0].x - prev.x)
     for i in range(len(run) - 1):
         start = run[i]
         end = run[i + 1]
-        seg = _arc_from_radius((start.x, start.y), (end.x, end.y), start.radius_m, step)
+        if i == 0:
+            seg = _arc_from_radius(
+                (start.x, start.y), (end.x, end.y), start.radius_m, step, heading
+            )
+        else:
+            seg = _arc_from_radius((start.x, start.y), (end.x, end.y), start.radius_m, step)
         pts_iter = seg if i == 0 else seg[1:]
         for x, y in pts_iter:
             resampled.append(
@@ -283,7 +316,7 @@ def resample(points: List[TrackPoint], step: float) -> List[TrackPoint]:
             while j < n and points[j].section == "corner":
                 j += 1
             if j - i > 1:
-                seg_pts = _chain_arcs(points[i:j], step)
+                seg_pts = _chain_arcs(points[i:j], step, points[(i - 1) % n])
                 pts_iter = seg_pts if not resampled else seg_pts[1:]
                 resampled.extend(pts_iter)
                 last = points[j - 1]

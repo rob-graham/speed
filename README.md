@@ -11,6 +11,10 @@ gradient estimates the maximum speed, gear and engine RPM at each point. The
 result is written to a new CSV file along with the cumulative distance
 travelled.
 
+Consecutive corner points automatically join tangentially with the preceding
+straight; track files do not need extra intermediate points to ensure smooth
+arcs at the start of a corner sequence.
+
 ## Usage
 
 ```
