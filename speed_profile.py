@@ -500,18 +500,27 @@ def compute_speed_profile(
     section = [p.section for p in pts]
     ds = [math.hypot(x[i + 1] - x[i], y[i + 1] - y[i]) for i in range(n - 1)]
 
-    R = [0.0] * n
-    for i in range(1, n - 1):
-        curv = _curvature(pts[i - 1], pts[i], pts[i + 1])
-        radius = 1.0 / max(abs(curv), 1e-9)
-        R[i] = radius if section[i] == "corner" else 1e9
-    R[0] = R[1]
-    R[-1] = R[-2]
+    R = [math.inf] * n
+    for i in range(n):
+        if section[i] == "corner":
+            if pts[i].radius_m != 0.0:
+                R[i] = abs(pts[i].radius_m)
+            elif 0 < i < n - 1:
+                curv = _curvature(pts[i - 1], pts[i], pts[i + 1])
+                R[i] = 1.0 / max(abs(curv), 1e-9)
+    if section[0] == "corner" and not math.isfinite(R[0]):
+        R[0] = R[1]
+    if section[-1] == "corner" and not math.isfinite(R[-1]):
+        R[-1] = R[-2]
 
     for _ in range(curv_smoothing):
         R_s = R.copy()
         for i in range(n):
-            R_s[i] = 0.25 * R[(i - 1) % n] + 0.5 * R[i] + 0.25 * R[(i + 1) % n]
+            if section[i] == "corner":
+                im1 = (i - 1) % n
+                ip1 = (i + 1) % n
+                if section[im1] == "corner" and section[ip1] == "corner":
+                    R_s[i] = 0.25 * R[im1] + 0.5 * R[i] + 0.25 * R[ip1]
         R = R_s
 
     v: List[float] = []
